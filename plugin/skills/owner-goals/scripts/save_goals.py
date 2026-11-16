@@ -14,7 +14,8 @@ Input is the goals JSON the map step writes:
   }
 
 Every evidence quote is checked against owner-prompts.md: it has to appear in a prompt headed with that
-minute. Quotes may skip words with "..." between the pieces. On a fresh save (no --carried-before), an
+minute. Quotes may skip words with "..." between the pieces. A quote whose words were typed only under other
+minutes is first moved to the nearest of them. On a fresh save (no --carried-before), an
 unverified quote is dropped, and so is an item left with no quote; the dropped quotes are reported, and
 the save is still refused when no verified item remains. On an update saved with --carried-before, a
 newly written quote that fails stops the save and is listed. A quote dated before the first prompt in owner-prompts.md has aged out of
@@ -206,6 +207,34 @@ def drop_unverifiable_fresh_quotes(goals, prompts):
     return dropped
 
 
+def redate_quotes(goals, prompts):
+    """Move a quote whose words are under another minute than the one it names to that minute, the nearest one when
+    several hold them. Models quote verbatim but misdate: the words still check out, only their minute was wrong.
+    Words found under no minute are left for the checks that drop or refuse them. Returns "title: old -> new"."""
+    moved = []
+    for kind_key in ITEM_KEYS:
+        for item in goals.get(kind_key, []):
+            for quote in item.get("evidence") or []:
+                if not unverified_quotes({"asks": [{"evidence": [quote]}]}, prompts):
+                    continue
+                at = str(quote.get("at", ""))[:16]
+                holding = [minute for minute in prompts
+                           if not unverified_quotes({"asks": [{"evidence": [{**quote, "at": minute}]}]}, prompts)]
+                if holding:
+                    quote["at"] = min(holding, key=lambda minute: abs(minute_number(minute) - minute_number(at)))
+                    moved.append(f'{label(item)}: {at} -> {quote["at"]}')
+    return moved
+
+
+def minute_number(minute):
+    """A YYYY-MM-DD HH:MM minute as a count of minutes, to compare distances; 0 for anything else."""
+    try:
+        parsed = datetime.datetime.strptime(minute, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return 0
+    return parsed.toordinal() * 1440 + parsed.hour * 60 + parsed.minute
+
+
 def unverified_quotes(goals, prompts):
     problems = []
     for kind_key in ITEM_KEYS:
@@ -384,6 +413,9 @@ def main():
     prompts = prompts_by_minute(args.prompts)
     aged_out = drop_aged_quotes(goals, prompts)
     dropped_carried = drop_unverifiable_carried_quotes(goals, prompts, args.carried_before) if args.carried_before else []
+    redated = redate_quotes(goals, prompts)
+    if redated:
+        print("moved quotes to the minute that holds their words:\n- " + "\n- ".join(redated), file=sys.stderr)
     fresh_problems = [] if args.carried_before else unverified_quotes(goals, prompts)
     dropped_unverified = [] if args.carried_before else drop_unverifiable_fresh_quotes(goals, prompts)
     areas, asks, rules = goals.get("focus_areas", []), goals.get("asks", []), goals.get("rules", [])

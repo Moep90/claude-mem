@@ -204,6 +204,33 @@ describe('save_goals.py', () => {
       expect(refused.stderr.toString()).toContain('every item was dropped with them');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  it('moves a verbatim quote to the minute that holds its words, the nearest when several do, on a fresh save and an update', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'save-goals-redate-'));
+    try {
+      writeFileSync(join(dir, 'owner-prompts.md'), '# Owner prompts\n\n## 2026-10-20 10:00 · claude · repo\nsession `a`\n\nship the cards today\n\n---\n\n## 2026-10-21 09:00 · claude · repo\nsession `b`\n\nfix the login page\n\n---\n\n## 2026-10-23 09:00 · claude · repo\nsession `c`\n\nship the cards today\n');
+      const save = (goals: unknown, extra: string[] = []) => {
+        writeFileSync(join(dir, 'goals.json'), JSON.stringify(goals));
+        return spawnPython([join(SKILLS, 'owner-goals', 'scripts', 'save_goals.py'), '--goals', join(dir, 'goals.json'), '--prompts', join(dir, 'owner-prompts.md'), '--dry-run', ...extra]);
+      };
+      const evidence = (result: ReturnType<typeof save>) => JSON.parse(result.stdout.toString()).writes.slice(1).map((write: { evidence: string }) => write.evidence);
+      // Typed on the 21st, quoted under the 20th; typed on the 20th and the 23rd, quoted under a minute with no prompt.
+      const fresh = save({ asks: [
+        { rank: 1, title: 'Login', focus_area: null, evidence: [{ at: '2026-10-20 10:00', quote: 'fix the login page' }] },
+        { rank: 2, title: 'Cards', focus_area: null, evidence: [{ at: '2026-10-22 12:00', quote: 'ship the cards' }] },
+      ] });
+      expect(fresh.exitCode).toBe(0);
+      expect(evidence(fresh)).toEqual(['2026-10-21 09:00 | fix the login page', '2026-10-23 09:00 | ship the cards']);
+      expect(JSON.parse(fresh.stdout.toString()).dropped_unverified_quotes).toEqual([]);
+      expect(fresh.stderr.toString()).toContain('Login: 2026-10-20 10:00 -> 2026-10-21 09:00');
+      // An update's new quote that names the wrong minute is moved too; words typed under no minute still refuse it.
+      const carried = ['--carried-before', '2026-10-21 00:00'];
+      const update = save({ asks: [{ rank: 1, title: 'Login', focus_area: null, evidence: [{ at: '2026-10-23 09:00', quote: 'fix the login page' }] }] }, carried);
+      expect(update.exitCode).toBe(0);
+      expect(evidence(update)).toEqual(['2026-10-21 09:00 | fix the login page']);
+      expect(save({ asks: [{ rank: 1, title: 'Made up', focus_area: null, evidence: [{ at: '2026-10-23 09:00', quote: 'never typed' }] }] }, carried).exitCode).not.toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 
 describe('save_goals.py: focus areas, asks and rules', () => {
